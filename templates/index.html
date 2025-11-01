@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Real-Time Object Detection | Advanced AI Vision</title>
+    <title>Real-Time Object Recognition | Advanced AI Vision</title>
     
     <!-- Meta tags for SEO -->
-    <meta name="description" content="Real-time object detection using YOLO and computer vision. Detect objects in live camera feed, uploaded videos, and images.">
-    <meta name="keywords" content="object detection, YOLO, computer vision, AI, machine learning, real-time detection">
+    <meta name="description" content="Real-time object recognition using YOLO and computer vision. Detect objects in live camera feed, uploaded videos, and images.">
+    <meta name="keywords" content="object recognition, object detection, YOLO, computer vision, AI, machine learning, real-time detection">
     <meta name="author" content="Aravind Itte">
     
     <!-- Favicon -->
@@ -404,7 +404,7 @@
     <div class="main-container animate__animated animate__fadeIn">
         <!-- Header -->
         <div class="header">
-            <h1><i class="fas fa-eye"></i> Real-Time Object Detection</h1>
+            <h1><i class="fas fa-eye"></i> Real-Time Object Recognition</h1>
             <p>Advanced AI-powered object recognition using YOLO models | Supports live camera, video & image detection</p>
         </div>
         
@@ -428,7 +428,7 @@
         <div class="feature-highlight">
             <h5><i class="fas fa-star"></i> Key Features</h5>
             <ul class="feature-list">
-                <li>Real-time object detection from webcam feed</li>
+                <li>Real-time object recognition from webcam feed</li>
                 <li>Upload and process videos with object tracking</li>
                 <li>Single image analysis with bounding boxes</li>
                 <li>Supports 80+ object classes (COCO dataset)</li>
@@ -439,7 +439,7 @@
         
         <!-- Control Panel -->
         <div class="control-panel">
-            <h4><i class="fas fa-cog"></i> Detection Mode</h4>
+            <h4><i class="fas fa-cog"></i> Recognition Mode</h4>
             
             <!-- Mode Selector -->
             <div class="mode-selector">
@@ -465,7 +465,7 @@
                     <canvas id="webcamCanvas" class="hidden-canvas"></canvas>
                     <div id="videoPlaceholder" class="placeholder-text">
                         <i class="fas fa-video fa-3x mb-3"></i><br>
-                        Click "Start Camera" to begin real-time object detection
+                        Click "Start Camera" to begin real-time object recognition
                     </div>
                     <div class="detection-info" id="detectionInfo" style="display: none;">
                         <div>Objects: <span id="objectCount">0</span></div>
@@ -491,7 +491,7 @@
                     <img id="videoDisplay" src="" alt="Video Stream" style="display: none;">
                     <div id="uploadPlaceholder" class="placeholder-text">
                         <i class="fas fa-cloud-upload-alt fa-3x mb-3"></i><br>
-                        Upload a file to see real-time detection
+                        Upload a file to see real-time recognition
                     </div>
                     <div class="detection-info" id="uploadDetectionInfo" style="display: none;">
                         <div>Objects: <span id="uploadObjectCount">0</span></div>
@@ -525,9 +525,9 @@
         <!-- Alerts -->
         <div id="alertContainer"></div>
         
-        <!-- Detection Statistics -->
+        <!-- Recognition Statistics -->
         <div class="detection-stats">
-            <h4><i class="fas fa-chart-bar"></i> Detection Statistics</h4>
+            <h4><i class="fas fa-chart-bar"></i> Recognition Statistics</h4>
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="stat-number" id="totalDetections">0</div>
@@ -552,7 +552,7 @@
         <div class="text-center mt-4 pt-3" style="border-top: 1px solid #e5e7eb; color: #6b7280;">
             <p class="mb-0">
                 <i class="fas fa-code"></i> Built with Python, Flask, OpenCV, YOLO & love | 
-                <a href="https://github.com/aravinditte/realtime-items-recognition" target="_blank" class="text-decoration-none">
+                <a href="https://github.com/aravinditte/realtime-object-recognition" target="_blank" class="text-decoration-none">
                     <i class="fab fa-github"></i> View Source
                 </a>
             </p>
@@ -882,7 +882,7 @@
                     displayProcessedImage(data.image, data.detections);
                 } else if (data.type === 'video') {
                     socket.emit('process_video', { filepath: data.filepath });
-                    showAlert('Processing video with real-time detection...', 'info');
+                    showAlert('Processing video with real-time recognition...', 'info');
                 }
             })
             .catch(error => {
@@ -903,7 +903,7 @@
             document.getElementById('uploadDetectionOverlay').style.display = 'block';
             
             updateDetectionInfo(detections, 'uploadDetectionInfo', 'uploadObjectCount', 'uploadDetectionOverlay', 'uploadDetectionList');
-            showAlert(`Detected ${detections.length} object(s)`, 'success');
+            showAlert(`Recognized ${detections.length} object(s)`, 'success');
             
             document.getElementById('uploadControls').style.display = 'none';
             document.getElementById('uploadProgressBar').style.display = 'none';
