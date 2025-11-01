@@ -2,20 +2,12 @@
 """
 Real-Time Object Recognition Web Application
 
-A powerful web application for real-time object recognition using YOLO models.
-Supports webcam, video upload, and image upload recognition with live detection overlays.
+Optimized for true realtime camera and video detection with minimal latency.
+No external environment variables required beyond HOST, PORT, FLASK_ENV, Python version.
 
 Author: Aravind Itte
 Repository: https://github.com/aravinditte/realtime-object-recognition
-Technology Stack: Flask, SocketIO, OpenCV, Ultralytics YOLO, TensorFlow
-
-Fixes Applied:
-- Remove invalid 'transports' kwarg from socketio.run() that was causing TypeError
-- Force WebSocket transport via client-side configuration instead
-- Use Render's PORT environment variable for proper port binding
-- Keep frame queueing, rate limiting, and preprocessing improvements
-- Add configurable recognition thresholds via environment variables
-- Improved object recognition accuracy with better preprocessing
+Technology Stack: Flask, SocketIO, OpenCV, Ultralytics YOLO
 """
 import os
 import cv2
@@ -36,28 +28,32 @@ import time
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuration from environment variables
-CONF = float(os.environ.get('CONFIDENCE_THRESHOLD', '0.30'))
-IOU = float(os.environ.get('IOU_THRESHOLD', '0.45'))
-MAX_Q = int(os.environ.get('FRAME_QUEUE_MAX', '3'))
-TARGET_W = int(os.environ.get('INFER_WIDTH', '640'))
-TARGET_H = int(os.environ.get('INFER_HEIGHT', '384'))
-CORS = os.environ.get('CORS_ORIGINS', '*')
+# Hardcoded configuration for optimal realtime performance
+CONFIDENCE_THRESHOLD = 0.30
+IOU_THRESHOLD = 0.45
+FRAME_QUEUE_MAX = 3
+INFER_WIDTH = 640
+INFER_HEIGHT = 384
+EMIT_FPS_CAP = 10  # Max 10 FPS emission to client
+CANVAS_WIDTH = 640
+CANVAS_HEIGHT = 480
 
 # Initialize Flask app
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'realtime-object-recognition-2024')
+app.config['SECRET_KEY'] = 'realtime-object-recognition-2024'
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
-# Initialize SocketIO with optimized settings for object recognition
+# Initialize SocketIO for realtime WebSocket communication
 socketio = SocketIO(
     app, 
-    cors_allowed_origins=CORS, 
+    cors_allowed_origins="*", 
     async_mode='eventlet',
     logger=False, 
     engineio_logger=False, 
     ping_timeout=30, 
-    ping_interval=25
+    ping_interval=25,
+    allow_upgrades=False,
+    cookie=False
 )
 
 # Global variables
@@ -65,94 +61,89 @@ model = None
 model_loaded = False
 processing_active = {}
 frame_queues = {}
+frame_counts = {}
 
 # Allowed file extensions
 ALLOWED_VIDEO_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv', 'webm'}
 ALLOWED_IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'bmp', 'tiff'}
 
 def allowed_file(filename, file_type):
-    """Check if file extension is allowed for object recognition"""
+    """Check if file extension is allowed"""
     if '.' not in filename:
         return False
     ext = filename.rsplit('.', 1)[1].lower()
-    if file_type == 'video':
-        return ext in ALLOWED_VIDEO_EXTENSIONS
-    elif file_type == 'image':
-        return ext in ALLOWED_IMAGE_EXTENSIONS
-    return False
+    return (file_type == 'video' and ext in ALLOWED_VIDEO_EXTENSIONS) or \
+           (file_type == 'image' and ext in ALLOWED_IMAGE_EXTENSIONS)
 
 def load_model():
-    """Load YOLO model for object recognition with error handling"""
+    """Load YOLO model for realtime object recognition"""
     global model, model_loaded
     try:
-        logger.info("Loading YOLO object recognition model...")
-        model_name = os.environ.get('MODEL_NAME', 'yolov8n.pt')
-        model = YOLO(model_name)
+        logger.info("Loading YOLO model for realtime recognition...")
+        model = YOLO('yolov8n.pt')  # Fastest model for realtime performance
         model_loaded = True
-        logger.info(f"YOLO object recognition model ({model_name}) loaded successfully!")
+        logger.info("YOLO model loaded successfully for realtime recognition!")
     except Exception as e:
-        logger.exception(f"Error loading YOLO object recognition model: {e}")
+        logger.exception(f"Error loading YOLO model: {e}")
         model_loaded = False
 
 def preprocess_frame(frame):
-    """Resize frame to target dimensions for consistent object recognition inference"""
-    return cv2.resize(frame, (TARGET_W, TARGET_H))
+    """Resize frame to inference size for consistent realtime processing"""
+    return cv2.resize(frame, (INFER_WIDTH, INFER_HEIGHT))
 
-def recognize_objects(frame):
-    """Perform object recognition on a frame with proper scaling"""
+def recognize_objects_realtime(frame):
+    """Perform realtime object recognition with optimized scaling"""
     if not model_loaded or model is None:
         return frame, []
     
     try:
-        # Preprocess frame for object recognition
+        # Get original dimensions
+        orig_h, orig_w = frame.shape[:2]
+        
+        # Preprocess for inference
         resized_frame = preprocess_frame(frame)
         
-        # Run YOLO object recognition on resized frame
-        results = model(resized_frame, conf=CONF, iou=IOU, verbose=False)
+        # Run YOLO inference
+        results = model(resized_frame, conf=CONFIDENCE_THRESHOLD, iou=IOU_THRESHOLD, verbose=False)
         
         recognitions = []
         annotated_frame = frame.copy()
         
-        # Scale factors to map recognitions back to original frame size
-        orig_h, orig_w = frame.shape[:2]
-        resized_h, resized_w = resized_frame.shape[:2]
-        scale_x, scale_y = orig_w / resized_w, orig_h / resized_h
+        # Calculate scale factors
+        scale_x = orig_w / INFER_WIDTH
+        scale_y = orig_h / INFER_HEIGHT
         
-        # Process object recognition results
+        # Process results
         for result in results:
             if result.boxes is None:
                 continue
                 
             for box in result.boxes:
-                # Get box coordinates and metadata
+                # Get detection data
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                 confidence = float(box.conf[0].cpu().numpy())
                 class_id = int(box.cls[0].cpu().numpy())
                 class_name = model.names.get(class_id, str(class_id))
                 
-                # Scale coordinates back to original frame size
+                # Scale back to original frame size
                 x1 = int(x1 * scale_x)
                 y1 = int(y1 * scale_y)
                 x2 = int(x2 * scale_x)
                 y2 = int(y2 * scale_y)
                 
-                # Draw bounding box for recognized object
-                color = (0, 255, 0)  # Green
+                # Draw bounding box with optimized thickness
+                color = (0, 255, 0)
                 cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
                 
-                # Prepare label for recognized object
+                # Draw label with background
                 label = f"{class_name} {confidence:.2f}"
-                (text_width, text_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                
-                # Draw label background
-                cv2.rectangle(annotated_frame, (x1, max(0, y1 - text_height - 6)), 
-                            (x1 + text_width + 6, y1), color, -1)
-                
-                # Draw label text
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(annotated_frame, (x1, max(0, y1 - th - 6)), 
+                            (x1 + tw + 6, y1), color, -1)
                 cv2.putText(annotated_frame, label, (x1 + 3, y1 - 4), 
                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
                 
-                # Store recognition info
+                # Store recognition
                 recognitions.append({
                     'class': class_name,
                     'confidence': confidence,
@@ -162,32 +153,34 @@ def recognize_objects(frame):
         return annotated_frame, recognitions
     
     except Exception as e:
-        logger.exception(f"Object recognition error: {e}")
+        logger.exception(f"Realtime recognition error: {e}")
         return frame, []
 
 @app.route('/')
 def index():
-    """Main page for real-time object recognition"""
+    """Main realtime object recognition page"""
     return render_template('index.html')
 
 @app.route('/health')
 def health_check():
-    """Health check endpoint for object recognition service"""
+    """Health check for realtime recognition service"""
     return jsonify({
         'status': 'healthy',
         'service': 'Real-Time Object Recognition',
         'model_loaded': model_loaded,
-        'timestamp': datetime.now().isoformat(),
-        'config': {
-            'confidence_threshold': CONF,
-            'iou_threshold': IOU,
-            'input_size': f"{TARGET_W}x{TARGET_H}"
-        }
+        'realtime_config': {
+            'confidence_threshold': CONFIDENCE_THRESHOLD,
+            'iou_threshold': IOU_THRESHOLD,
+            'inference_size': f"{INFER_WIDTH}x{INFER_HEIGHT}",
+            'canvas_size': f"{CANVAS_WIDTH}x{CANVAS_HEIGHT}",
+            'max_fps': EMIT_FPS_CAP
+        },
+        'timestamp': datetime.now().isoformat()
     })
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    """Handle file upload for image/video object recognition"""
+    """Handle file upload for realtime processing"""
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
     
@@ -195,15 +188,13 @@ def upload_file():
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
     
-    # Check file type and extension
     is_video = allowed_file(file.filename, 'video')
     is_image = allowed_file(file.filename, 'image')
     
     if not (is_video or is_image):
-        return jsonify({'error': 'Unsupported file format for object recognition'}), 400
+        return jsonify({'error': 'Unsupported file format'}), 400
     
     try:
-        # Save uploaded file temporarily
         filename = secure_filename(file.filename)
         unique_filename = f"{uuid.uuid4()}_{filename}"
         os.makedirs('uploads', exist_ok=True)
@@ -211,18 +202,17 @@ def upload_file():
         file.save(filepath)
         
         if is_image:
-            # Process image for object recognition immediately
             frame = cv2.imread(filepath)
             if frame is None:
                 return jsonify({'error': 'Invalid image file'}), 400
             
-            annotated_frame, recognitions = recognize_objects(frame)
+            annotated_frame, recognitions = recognize_objects_realtime(frame)
             
-            # Encode processed frame
-            _, buffer = cv2.imencode('.jpg', annotated_frame)
+            # Encode result
+            _, buffer = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
             img_base64 = base64.b64encode(buffer).decode('utf-8')
             
-            # Clean up uploaded file
+            # Cleanup
             try:
                 os.remove(filepath)
             except Exception:
@@ -235,43 +225,46 @@ def upload_file():
                 'count': len(recognitions)
             })
         
-        else:  # is_video
+        else:  # video
             return jsonify({
                 'type': 'video',
                 'filepath': filepath,
-                'message': 'Video uploaded successfully. Starting real-time object recognition...'
+                'message': 'Starting realtime video processing...'
             })
     
     except Exception as e:
-        logger.exception(f"Error processing upload for object recognition: {e}")
-        return jsonify({'error': 'Failed to process file for object recognition'}), 500
+        logger.exception(f"Upload processing error: {e}")
+        return jsonify({'error': 'Failed to process file'}), 500
 
 @socketio.on('connect')
 def on_connect():
-    """Handle client connection to object recognition service"""
+    """Handle realtime client connection"""
     sid = request.sid
     processing_active[sid] = False
-    frame_queues[sid] = LightQueue(maxsize=MAX_Q)
+    frame_queues[sid] = LightQueue(maxsize=FRAME_QUEUE_MAX)
+    frame_counts[sid] = 0
     
-    logger.info(f"Client {sid} connected to object recognition service")
+    logger.info(f"Realtime client {sid} connected")
     emit('connection_status', {
         'status': 'connected',
         'service': 'Real-Time Object Recognition',
         'model_loaded': model_loaded,
-        'client_id': sid
+        'client_id': sid,
+        'realtime_ready': True
     })
 
 @socketio.on('disconnect')
 def on_disconnect():
-    """Handle client disconnection from object recognition service"""
+    """Handle client disconnection"""
     sid = request.sid
     processing_active.pop(sid, None)
     frame_queues.pop(sid, None)
-    logger.info(f"Client {sid} disconnected from object recognition service")
+    frame_counts.pop(sid, None)
+    logger.info(f"Realtime client {sid} disconnected")
 
 @socketio.on('webcam_frame')
 def on_webcam_frame(data):
-    """Handle webcam frame for real-time object recognition - queue with backpressure"""
+    """Handle realtime webcam frame with optimized queueing"""
     sid = request.sid
     queue = frame_queues.get(sid)
     
@@ -279,42 +272,52 @@ def on_webcam_frame(data):
         return
     
     try:
-        # Drop oldest frame if queue is full to prevent overflow
-        if queue.qsize() >= MAX_Q:
+        # Drop oldest frame if queue full (maintains realtime flow)
+        while queue.qsize() >= FRAME_QUEUE_MAX:
             try:
                 queue.get_nowait()
             except Empty:
-                pass
+                break
         
-        # Add new frame to recognition queue
+        # Enqueue new frame
         queue.put_nowait(data['frame'])
+        
+        # Send periodic queue status
+        frame_counts[sid] += 1
+        if frame_counts[sid] % 20 == 0:
+            emit('queue_status', {'frames_received': frame_counts[sid], 'queue_size': queue.qsize()})
+    
     except Exception:
         pass
     
-    # Start frame processing worker if not already running
+    # Start processing worker
     if not processing_active.get(sid):
         processing_active[sid] = True
-        eventlet.spawn_n(process_frames_worker, sid)
+        eventlet.spawn_n(realtime_frame_worker, sid)
 
-def process_frames_worker(sid):
-    """Background worker to process webcam frames for object recognition with rate limiting"""
+def realtime_frame_worker(sid):
+    """Realtime frame processing worker with optimized throughput"""
     queue = frame_queues.get(sid)
     if not queue:
         return
     
-    last_emit_time = 0.0
-    target_interval = 0.1  # 10 FPS max for object recognition
+    last_emit = 0.0
+    emit_interval = 1.0 / EMIT_FPS_CAP  # Cap at 10 FPS emission
+    processed_count = 0
     
     while processing_active.get(sid) and queue:
         try:
-            # Get frame from queue with timeout
             frame_data = queue.get(timeout=1.0)
         except Empty:
             continue
         
         try:
-            # Decode base64 frame
-            image_data = frame_data.split(',')[1] if ',' in frame_data else frame_data
+            # Decode frame safely
+            if ',' in frame_data:
+                image_data = frame_data.split(',')[1]
+            else:
+                image_data = frame_data
+                
             image_bytes = base64.b64decode(image_data)
             nparr = np.frombuffer(image_bytes, np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -322,53 +325,60 @@ def process_frames_worker(sid):
             if frame is None:
                 continue
             
-            # Process frame for object recognition
-            annotated_frame, recognitions = recognize_objects(frame)
+            # Realtime object recognition
+            annotated_frame, recognitions = recognize_objects_realtime(frame)
             
-            # Encode processed frame
+            # Encode with optimized quality
             _, buffer = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
             processed_base64 = base64.b64encode(buffer).decode('utf-8')
             
-            # Rate limit emissions for object recognition results
+            # Emit with rate limiting
             current_time = time.time()
-            if current_time - last_emit_time >= target_interval:
+            if current_time - last_emit >= emit_interval:
                 socketio.emit('processed_frame', {
                     'frame': f"data:image/jpeg;base64,{processed_base64}",
                     'detections': recognitions,
-                    'timestamp': current_time
+                    'timestamp': current_time,
+                    'realtime': True
                 }, room=sid)
-                last_emit_time = current_time
+                last_emit = current_time
+                
+                processed_count += 1
+                if processed_count % 50 == 0:
+                    logger.info(f"Realtime processed {processed_count} frames for {sid}")
                 
         except Exception as e:
-            logger.exception(f"Object recognition frame processing error: {e}")
-            socketio.emit('error', {'message': 'Object recognition processing error'}, room=sid)
+            logger.exception(f"Realtime frame worker error: {e}")
+            socketio.emit('error', {'message': 'Realtime processing error', 'recoverable': True}, room=sid)
 
 @socketio.on('process_video')
 def on_process_video(data):
-    """Handle video processing request for object recognition"""
+    """Handle realtime video processing"""
     sid = request.sid
     filepath = data.get('filepath')
     
     if not filepath or not os.path.exists(filepath):
-        emit('error', {'message': 'Video file not found for object recognition'})
+        emit('error', {'message': 'Video file not found'})
         return
     
     processing_active[sid] = True
-    eventlet.spawn_n(process_video_worker, sid, filepath)
+    eventlet.spawn_n(realtime_video_worker, sid, filepath)
 
-def process_video_worker(sid, filepath):
-    """Background worker to process video frames for object recognition"""
+def realtime_video_worker(sid, filepath):
+    """Realtime video processing worker"""
     cap = cv2.VideoCapture(filepath)
     
     if not cap.isOpened():
-        socketio.emit('error', {'message': 'Cannot open video file for object recognition'}, room=sid)
+        socketio.emit('error', {'message': 'Cannot open video file'}, room=sid)
         processing_active[sid] = False
         return
     
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25
-    frame_delay = 1.0 / fps
+    frame_delay = max(0.033, 1.0 / fps)  # Cap at ~30 FPS for realtime feel
     frame_count = 0
+    
+    logger.info(f"Starting realtime video processing: {total_frames} frames at {fps} FPS")
     
     try:
         while processing_active.get(sid) and cap.isOpened():
@@ -378,54 +388,54 @@ def process_video_worker(sid, filepath):
             
             frame_count += 1
             
-            # Process frame with object recognition
-            annotated_frame, recognitions = recognize_objects(frame)
+            # Process frame with realtime recognition
+            annotated_frame, recognitions = recognize_objects_realtime(frame)
             
             # Encode frame
             _, buffer = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
             frame_base64 = base64.b64encode(buffer).decode('utf-8')
             
-            # Emit processed frame with object recognition results
+            # Emit realtime video frame
             socketio.emit('video_frame', {
                 'frame': f"data:image/jpeg;base64,{frame_base64}",
                 'detections': recognitions,
                 'progress': (frame_count / total_frames * 100) if total_frames > 0 else 0,
                 'frame_number': frame_count,
-                'total_frames': total_frames
+                'total_frames': total_frames,
+                'realtime': True
             }, room=sid)
             
-            # Control playback speed for object recognition
+            # Control realtime playback speed
             eventlet.sleep(frame_delay)
             
     finally:
         cap.release()
-        # Clean up video file
         try:
             os.remove(filepath)
         except Exception:
             pass
         
-        socketio.emit('video_complete', {}, room=sid)
-        logger.info(f"Video object recognition processing completed for client {sid}")
+        socketio.emit('video_complete', {'message': 'Realtime video processing completed'}, room=sid)
+        logger.info(f"Realtime video processing completed for {sid}: {frame_count} frames")
 
 @socketio.on('stop_processing')
 def on_stop_processing():
-    """Stop any active object recognition processing for client"""
+    """Stop realtime processing"""
     sid = request.sid
     processing_active[sid] = False
-    emit('processing_stopped', {'status': 'stopped'})
+    emit('processing_stopped', {'status': 'stopped', 'realtime': True})
 
 if __name__ == '__main__':
-    # Load YOLO model for object recognition on startup
+    # Load model on startup
     load_model()
     
-    # Use PORT=5000 as default, can be overridden by Render's PORT env var
+    # Get port and host
     port = int(os.environ.get('PORT', 5000))
     host = os.environ.get('HOST', '0.0.0.0')
     
     logger.info(f"Starting Real-Time Object Recognition Server on {host}:{port}")
-    logger.info(f"Object recognition model loaded: {model_loaded}")
-    logger.info(f"Object recognition config: conf={CONF}, iou={IOU}, input_size={TARGET_W}x{TARGET_H}")
+    logger.info(f"Model loaded: {model_loaded}")
+    logger.info(f"Realtime config: conf={CONFIDENCE_THRESHOLD}, iou={IOU_THRESHOLD}, "f"inference={INFER_WIDTH}x{INFER_HEIGHT}, canvas={CANVAS_WIDTH}x{CANVAS_HEIGHT}")
     
-    # Start the Real-Time Object Recognition application
+    # Start realtime recognition server
     socketio.run(app, host=host, port=port, debug=False)
