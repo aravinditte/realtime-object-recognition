@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 Integrate the new realtime engine, tracker, and overlay into the Flask-SocketIO server.
+Adds dynamic stride (frame skip) for faster video processing based on duration and target throughput.
+Target: 10s video completes in ~5-6s on CPU by adaptive stride and paced emission.
 """
 import os
 import cv2
@@ -169,6 +171,25 @@ def on_process_video(data):
     processing_active[sid] = True
     eventlet.spawn_n(video_worker, sid, path)
 
+def _choose_stride(total_frames:int, fps:float) -> int:
+    """Adaptive stride selection to meet throughput targets.
+    Goals:
+      - 10s video (~fps*10 frames) should complete in ~5-6s on CPU.
+      - For longer videos, increase stride more aggressively.
+    """
+    duration = (total_frames / fps) if fps > 0 else 10.0
+    # Base stride by duration
+    if duration <= 12:
+        # short videos: stride 2 to achieve ~2x speed
+        return 2
+    elif duration <= 30:
+        return 2
+    elif duration <= 60:
+        return 3
+    else:
+        return 4
+
+
 def video_worker(sid, path):
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
@@ -176,10 +197,16 @@ def video_worker(sid, path):
         processing_active[sid] = False
         return
     fps = cap.get(cv2.CAP_PROP_FPS) or 25
-    delay = max(0.033, 1.0 / fps)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    stride = _choose_stride(total, fps)
+    # Pace emission approximately to keep UI responsive, but faster than realtime
+    # e.g., if original fps=30 and stride=2, we aim ~20-24 fps emission pacing
+    target_emit_fps = min(24, int((fps / max(1, stride)) + 6))
+    emit_delay = 1.0 / max(10, target_emit_fps)
+
+    logger.info(f"Video processing: total={total}, fps={fps}, stride={stride}, emit_delay={emit_delay:.3f}s")
+
     idx = 0
-    stride = 1  # set to 2 for speed mode
     try:
         while processing_active.get(sid) and cap.isOpened():
             ret, frame = cap.read()
@@ -197,7 +224,7 @@ def video_worker(sid, path):
                 'total_frames': total,
                 'realtime': True
             }, room=sid)
-            eventlet.sleep(delay)
+            eventlet.sleep(emit_delay)
     finally:
         cap.release()
         try: os.remove(path)
