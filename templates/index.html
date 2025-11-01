@@ -174,10 +174,18 @@
             justify-content: center;
         }
         
-        #videoDisplay {
+        #videoDisplay, #webcamVideo {
             max-width: 100%;
             height: auto;
             display: block;
+        }
+        
+        #webcamVideo {
+            transform: scaleX(-1); /* Mirror the video */
+        }
+        
+        .hidden-canvas {
+            display: none;
         }
         
         .detection-info {
@@ -190,6 +198,25 @@
             right: 15px;
             font-size: 14px;
             z-index: 10;
+        }
+        
+        .detection-overlay {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 12px;
+            max-width: 200px;
+            z-index: 10;
+        }
+        
+        .detection-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
         }
         
         .controls {
@@ -293,6 +320,7 @@
             border-radius: 4px;
             overflow: hidden;
             background: #e5e7eb;
+            margin-top: 10px;
         }
         
         .progress-bar {
@@ -432,7 +460,9 @@
             <!-- Webcam Mode -->
             <div id="webcamMode" class="mode-content">
                 <div class="video-container">
-                    <img id="videoDisplay" src="" alt="Video Stream" style="display: none;">
+                    <video id="webcamVideo" autoplay muted style="display: none;"></video>
+                    <img id="processedDisplay" src="" alt="Processed Stream" style="display: none;">
+                    <canvas id="webcamCanvas" class="hidden-canvas"></canvas>
                     <div id="videoPlaceholder" class="placeholder-text">
                         <i class="fas fa-video fa-3x mb-3"></i><br>
                         Click "Start Camera" to begin real-time object detection
@@ -440,6 +470,9 @@
                     <div class="detection-info" id="detectionInfo" style="display: none;">
                         <div>Objects: <span id="objectCount">0</span></div>
                         <div>FPS: <span id="fpsDisplay">0</span></div>
+                    </div>
+                    <div class="detection-overlay" id="detectionOverlay" style="display: none;">
+                        <div id="detectionList"></div>
                     </div>
                 </div>
                 <div class="controls">
@@ -454,6 +487,21 @@
             
             <!-- Upload Mode -->
             <div id="uploadMode" class="mode-content" style="display: none;">
+                <div class="video-container">
+                    <img id="videoDisplay" src="" alt="Video Stream" style="display: none;">
+                    <div id="uploadPlaceholder" class="placeholder-text">
+                        <i class="fas fa-cloud-upload-alt fa-3x mb-3"></i><br>
+                        Upload a file to see real-time detection
+                    </div>
+                    <div class="detection-info" id="uploadDetectionInfo" style="display: none;">
+                        <div>Objects: <span id="uploadObjectCount">0</span></div>
+                        <div>Progress: <span id="uploadProgress">0%</span></div>
+                    </div>
+                    <div class="detection-overlay" id="uploadDetectionOverlay" style="display: none;">
+                        <div id="uploadDetectionList"></div>
+                    </div>
+                </div>
+                
                 <div class="upload-area" id="uploadArea">
                     <i class="fas fa-cloud-upload-alt fa-3x mb-3" style="color: #9ca3af;"></i>
                     <h5>Drag & Drop Files Here</h5>
@@ -462,11 +510,14 @@
                     <input type="file" id="fileInput" class="d-none" accept="video/*,image/*">
                 </div>
                 
-                <div id="uploadProgress" class="mt-3" style="display: none;">
-                    <div class="progress">
-                        <div class="progress-bar bg-primary" role="progressbar" style="width: 0%"></div>
-                    </div>
-                    <small class="text-muted mt-2 d-block text-center">Processing...</small>
+                <div class="controls" id="uploadControls" style="display: none;">
+                    <button id="stopProcessing" class="btn-custom btn-danger">
+                        <i class="fas fa-stop"></i> Stop Processing
+                    </button>
+                </div>
+                
+                <div class="progress" id="uploadProgressBar" style="display: none;">
+                    <div class="progress-bar bg-primary" role="progressbar" style="width: 0%"></div>
                 </div>
             </div>
         </div>
@@ -492,7 +543,7 @@
                 </div>
                 <div class="stat-card">
                     <div class="stat-number" id="processingTime">0ms</div>
-                    <div class="stat-label">Avg Processing</div>
+                    <div class="stat-label">Processing Speed</div>
                 </div>
             </div>
         </div>
@@ -500,7 +551,7 @@
         <!-- Footer -->
         <div class="text-center mt-4 pt-3" style="border-top: 1px solid #e5e7eb; color: #6b7280;">
             <p class="mb-0">
-                <i class="fas fa-code"></i> Built with Python, Flask, OpenCV, YOLO & ❤️ | 
+                <i class="fas fa-code"></i> Built with Python, Flask, OpenCV, YOLO & love | 
                 <a href="https://github.com/aravinditte/realtime-items-recognition" target="_blank" class="text-decoration-none">
                     <i class="fab fa-github"></i> View Source
                 </a>
@@ -516,7 +567,8 @@
     <script>
         // Global variables
         let socket;
-        let isWebcamActive = false;
+        let webcamStream = null;
+        let webcamActive = false;
         let detectionStats = {
             total: 0,
             unique: new Set(),
@@ -553,27 +605,13 @@
                 updateModelStatus(data.model_loaded);
             });
             
-            socket.on('frame_data', function(data) {
-                displayFrame(data.frame);
-                updateDetectionInfo(data.detections);
+            socket.on('processed_frame', function(data) {
+                displayProcessedFrame(data.frame, data.detections);
                 updateFPS();
             });
             
-            socket.on('webcam_status', function(data) {
-                if (data.status === 'started') {
-                    isWebcamActive = true;
-                    document.getElementById('startWebcam').style.display = 'none';
-                    document.getElementById('stopWebcam').style.display = 'inline-flex';
-                    document.getElementById('videoPlaceholder').style.display = 'none';
-                    document.getElementById('detectionInfo').style.display = 'block';
-                } else if (data.status === 'stopped') {
-                    isWebcamActive = false;
-                    document.getElementById('startWebcam').style.display = 'inline-flex';
-                    document.getElementById('stopWebcam').style.display = 'none';
-                    document.getElementById('videoDisplay').style.display = 'none';
-                    document.getElementById('videoPlaceholder').style.display = 'block';
-                    document.getElementById('detectionInfo').style.display = 'none';
-                }
+            socket.on('video_frame', function(data) {
+                displayVideoFrame(data.frame, data.detections, data.progress);
             });
             
             socket.on('error', function(data) {
@@ -582,7 +620,12 @@
             
             socket.on('video_complete', function() {
                 showAlert('Video processing completed!', 'success');
-                hideUploadProgress();
+                document.getElementById('uploadControls').style.display = 'none';
+                document.getElementById('uploadProgressBar').style.display = 'none';
+            });
+            
+            socket.on('processing_stopped', function() {
+                showAlert('Processing stopped', 'info');
             });
         }
         
@@ -599,7 +642,7 @@
             document.getElementById('startWebcam').addEventListener('click', startWebcam);
             document.getElementById('stopWebcam').addEventListener('click', stopWebcam);
             
-            // File upload
+            // Upload controls
             const uploadArea = document.getElementById('uploadArea');
             const fileInput = document.getElementById('fileInput');
             
@@ -610,12 +653,18 @@
             uploadArea.addEventListener('dragover', handleDragOver);
             uploadArea.addEventListener('dragleave', handleDragLeave);
             uploadArea.addEventListener('drop', handleFileDrop);
+            
+            // Stop processing
+            document.getElementById('stopProcessing').addEventListener('click', function() {
+                socket.emit('stop_processing');
+                stopWebcam();
+            });
         }
         
         // Switch between modes
         function switchMode(mode) {
             // Stop any active processing
-            if (isWebcamActive) {
+            if (webcamActive) {
                 stopWebcam();
             }
             
@@ -639,16 +688,117 @@
             currentMode = mode;
         }
         
-        // Start webcam streaming
-        function startWebcam() {
-            socket.emit('start_webcam');
-            showAlert('Starting camera...', 'info');
+        // Start webcam using browser's getUserMedia
+        async function startWebcam() {
+            try {
+                // Request camera access
+                webcamStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        width: { ideal: 640 }, 
+                        height: { ideal: 480 },
+                        facingMode: 'user'
+                    } 
+                });
+                
+                const video = document.getElementById('webcamVideo');
+                video.srcObject = webcamStream;
+                video.style.display = 'block';
+                
+                // Hide placeholder
+                document.getElementById('videoPlaceholder').style.display = 'none';
+                document.getElementById('detectionInfo').style.display = 'block';
+                document.getElementById('detectionOverlay').style.display = 'block';
+                
+                // Update UI
+                document.getElementById('startWebcam').style.display = 'none';
+                document.getElementById('stopWebcam').style.display = 'inline-flex';
+                
+                webcamActive = true;
+                
+                // Start processing frames
+                processWebcamFrames();
+                
+                showAlert('Camera started successfully!', 'success');
+                
+            } catch (error) {
+                console.error('Error accessing camera:', error);
+                showAlert(`Camera access denied: ${error.message}`, 'danger');
+            }
         }
         
-        // Stop webcam streaming
+        // Process webcam frames
+        function processWebcamFrames() {
+            if (!webcamActive) return;
+            
+            const video = document.getElementById('webcamVideo');
+            const canvas = document.getElementById('webcamCanvas');
+            const ctx = canvas.getContext('2d');
+            
+            // Set canvas dimensions
+            canvas.width = video.videoWidth || 640;
+            canvas.height = video.videoHeight || 480;
+            
+            // Draw current frame to canvas
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // Convert to base64 and send to server
+            const frameData = canvas.toDataURL('image/jpeg', 0.8);
+            socket.emit('webcam_frame', { frame: frameData });
+            
+            // Continue processing
+            if (webcamActive) {
+                setTimeout(processWebcamFrames, 100); // ~10 FPS
+            }
+        }
+        
+        // Stop webcam
         function stopWebcam() {
-            socket.emit('stop_webcam');
-            isWebcamActive = false;
+            webcamActive = false;
+            
+            if (webcamStream) {
+                webcamStream.getTracks().forEach(track => track.stop());
+                webcamStream = null;
+            }
+            
+            // Reset UI
+            document.getElementById('webcamVideo').style.display = 'none';
+            document.getElementById('processedDisplay').style.display = 'none';
+            document.getElementById('videoPlaceholder').style.display = 'block';
+            document.getElementById('detectionInfo').style.display = 'none';
+            document.getElementById('detectionOverlay').style.display = 'none';
+            
+            document.getElementById('startWebcam').style.display = 'inline-flex';
+            document.getElementById('stopWebcam').style.display = 'none';
+        }
+        
+        // Display processed frame
+        function displayProcessedFrame(frameData, detections) {
+            const img = document.getElementById('processedDisplay');
+            img.src = frameData;
+            img.style.display = 'block';
+            
+            // Hide original video
+            document.getElementById('webcamVideo').style.display = 'none';
+            
+            updateDetectionInfo(detections, 'detectionInfo', 'objectCount', 'detectionOverlay', 'detectionList');
+        }
+        
+        // Display video frame
+        function displayVideoFrame(frameData, detections, progress) {
+            const img = document.getElementById('videoDisplay');
+            img.src = frameData;
+            img.style.display = 'block';
+            
+            // Hide placeholder
+            document.getElementById('uploadPlaceholder').style.display = 'none';
+            document.getElementById('uploadDetectionInfo').style.display = 'block';
+            document.getElementById('uploadDetectionOverlay').style.display = 'block';
+            
+            // Update progress
+            document.getElementById('uploadProgress').textContent = Math.round(progress) + '%';
+            document.querySelector('.progress-bar').style.width = progress + '%';
+            
+            updateDetectionInfo(detections, 'uploadDetectionInfo', 'uploadObjectCount', 'uploadDetectionOverlay', 'uploadDetectionList');
         }
         
         // Handle file selection
@@ -686,7 +836,9 @@
             const formData = new FormData();
             formData.append('file', file);
             
-            showUploadProgress();
+            // Show processing UI
+            document.getElementById('uploadControls').style.display = 'flex';
+            document.getElementById('uploadProgressBar').style.display = 'block';
             
             fetch('/upload', {
                 method: 'POST',
@@ -700,43 +852,58 @@
                 
                 if (data.type === 'image') {
                     displayProcessedImage(data.image, data.detections);
-                    hideUploadProgress();
                 } else if (data.type === 'video') {
                     socket.emit('process_video', { filepath: data.filepath });
-                    showAlert('Processing video...', 'info');
+                    showAlert('Processing video with real-time detection...', 'info');
                 }
             })
             .catch(error => {
                 showAlert(error.message, 'danger');
-                hideUploadProgress();
+                document.getElementById('uploadControls').style.display = 'none';
+                document.getElementById('uploadProgressBar').style.display = 'none';
             });
         }
         
         // Display processed image
         function displayProcessedImage(imageData, detections) {
-            const videoDisplay = document.getElementById('videoDisplay');
-            videoDisplay.src = `data:image/jpeg;base64,${imageData}`;
-            videoDisplay.style.display = 'block';
+            const img = document.getElementById('videoDisplay');
+            img.src = `data:image/jpeg;base64,${imageData}`;
+            img.style.display = 'block';
             
-            // Switch to webcam mode to show result
-            switchMode('webcam');
-            document.getElementById('videoPlaceholder').style.display = 'none';
+            document.getElementById('uploadPlaceholder').style.display = 'none';
+            document.getElementById('uploadDetectionInfo').style.display = 'block';
+            document.getElementById('uploadDetectionOverlay').style.display = 'block';
             
-            updateDetectionInfo(detections);
+            updateDetectionInfo(detections, 'uploadDetectionInfo', 'uploadObjectCount', 'uploadDetectionOverlay', 'uploadDetectionList');
             showAlert(`Detected ${detections.length} object(s)`, 'success');
-        }
-        
-        // Display video frame
-        function displayFrame(frameData) {
-            const videoDisplay = document.getElementById('videoDisplay');
-            videoDisplay.src = `data:image/jpeg;base64,${frameData}`;
-            videoDisplay.style.display = 'block';
+            
+            document.getElementById('uploadControls').style.display = 'none';
+            document.getElementById('uploadProgressBar').style.display = 'none';
         }
         
         // Update detection information
-        function updateDetectionInfo(detections) {
-            const objectCount = document.getElementById('objectCount');
-            objectCount.textContent = detections.length;
+        function updateDetectionInfo(detections, infoId, countId, overlayId, listId) {
+            // Update count
+            document.getElementById(countId).textContent = detections.length;
+            
+            // Update detection list overlay
+            const detectionList = document.getElementById(listId);
+            detectionList.innerHTML = '';
+            
+            const objectCounts = {};
+            detections.forEach(detection => {
+                objectCounts[detection.class] = (objectCounts[detection.class] || 0) + 1;
+            });
+            
+            Object.entries(objectCounts).forEach(([className, count]) => {
+                const item = document.createElement('div');
+                item.className = 'detection-item';
+                item.innerHTML = `
+                    <span>${className}</span>
+                    <span>${count}</span>
+                `;
+                detectionList.appendChild(item);
+            });
             
             // Update statistics
             detectionStats.total += detections.length;
@@ -827,20 +994,6 @@
                     alert.remove();
                 }, 300);
             }
-        }
-        
-        // Show upload progress
-        function showUploadProgress() {
-            document.getElementById('uploadProgress').style.display = 'block';
-            const progressBar = document.querySelector('.progress-bar');
-            progressBar.style.width = '100%';
-        }
-        
-        // Hide upload progress
-        function hideUploadProgress() {
-            document.getElementById('uploadProgress').style.display = 'none';
-            const progressBar = document.querySelector('.progress-bar');
-            progressBar.style.width = '0%';
         }
     </script>
 </body>
