@@ -1,11 +1,11 @@
-# Real-Time Object Detection Web Application
+# Real-Time Object Recognition Web Application
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
 [![Flask](https://img.shields.io/badge/Flask-3.0+-green.svg)](https://flask.palletsprojects.com)
 [![YOLO](https://img.shields.io/badge/YOLO-v8/v11-orange.svg)](https://ultralytics.com)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A powerful, real-time object detection web application that recognizes and tracks objects in live camera feeds, uploaded videos, and images using state-of-the-art YOLO models.
+A powerful, real-time object recognition web application that recognizes and tracks objects in live camera feeds, uploaded videos, and images using state-of-the-art YOLO models.
 
 ## Features
 
@@ -24,8 +24,8 @@ A powerful, real-time object detection web application that recognizes and track
 
 ```bash
 # Clone the repository
-git clone https://github.com/aravinditte/realtime-items-recognition.git
-cd realtime-items-recognition
+git clone https://github.com/aravinditte/realtime-object-recognition.git
+cd realtime-object-recognition
 
 # Create virtual environment
 python -m venv venv
@@ -44,8 +44,8 @@ Open your browser and navigate to `http://localhost:5000`
 
 ```bash
 # Build and run with Docker
-docker build -t realtime-object-detection .
-docker run -p 5000:5000 realtime-object-detection
+docker build -t realtime-object-recognition .
+docker run -p 5000:5000 realtime-object-recognition
 
 # Or use Docker Compose
 docker-compose up
@@ -116,12 +116,14 @@ SECRET_KEY=your-secret-key
 
 # AI Model Settings
 MODEL_NAME=yolov8n.pt  # Options: yolov8n.pt, yolov8s.pt, yolov8m.pt, yolov8l.pt
-CONFIDENCE_THRESHOLD=0.5
+CONFIDENCE_THRESHOLD=0.30
 IOU_THRESHOLD=0.45
 
 # Performance Settings
 MAX_CONTENT_LENGTH=52428800  # 50MB
-FRAME_SKIP=2  # Process every nth frame for performance
+FRAME_QUEUE_MAX=3  # Frame queue size for WebSocket
+INFER_WIDTH=640
+INFER_HEIGHT=384
 ```
 
 ### Model Options
@@ -185,6 +187,15 @@ python -c "from app import app; print('App imports successfully')"
 # Load testing (install hey first)
 hey -n 1000 -c 10 http://localhost:5000/health
 ```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
 ### Development Setup
 
 ```bash
@@ -216,16 +227,17 @@ POST /upload          - File upload for processing
 
 ```
 # Client to Server
-start_webcam          - Start camera streaming
-stop_webcam           - Stop camera streaming
+webcam_frame          - Send webcam frame for processing
 process_video         - Process uploaded video
+stop_processing       - Stop any active processing
 
 # Server to Client
 connection_status     - Connection established
-frame_data           - Processed frame data
-webcam_status        - Camera status updates
-error                - Error notifications
-video_complete       - Video processing finished
+processed_frame       - Processed webcam frame with detections
+video_frame           - Processed video frame with detections
+error                 - Error notifications
+video_complete        - Video processing finished
+processing_stopped    - Processing stopped confirmation
 ```
 
 ## Troubleshooting
@@ -236,6 +248,7 @@ video_complete       - Video processing finished
    ```bash
    # Check camera permissions in browser
    # Ensure HTTPS for production deployment
+   # Try different browsers (Chrome recommended)
    ```
 
 2. **Model Loading Fails**
@@ -252,19 +265,42 @@ video_complete       - Video processing finished
    ```bash
    # Check CORS settings
    # Verify SocketIO version compatibility
-   # Test with different browsers
+   # Ensure WebSocket transport is available
    ```
 
 4. **Memory Issues**
    ```bash
    # Use smaller model (yolov8n.pt)
    # Reduce frame processing rate
-   # Increase system memory
+   # Set FRAME_QUEUE_MAX=1 for lower memory usage
+   ```
+
+5. **No Detections**
+   ```bash
+   # Lower confidence threshold: CONFIDENCE_THRESHOLD=0.25
+   # Ensure good lighting conditions
+   # Try with clear, recognizable objects
    ```
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Author
+
+**Aravind Itte**
+- GitHub: [@aravinditte](https://github.com/aravinditte)
+- LinkedIn: [Connect with me](https://linkedin.com/in/aravinditte)
+- Email: aravinditte@gmail.com
+
+## Acknowledgments
+
+- [Ultralytics](https://ultralytics.com) for the amazing YOLO models
+- [OpenCV](https://opencv.org) for computer vision capabilities
+- [Flask](https://flask.palletsprojects.com) for the web framework
+- [Socket.IO](https://socket.io) for real-time communication
+- [Bootstrap](https://getbootstrap.com) for the responsive UI
+
 ---
 
 <p align="center">
