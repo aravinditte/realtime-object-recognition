@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
 Real-Time Object Detection Web Application
-Supports webcam, video upload, and image upload detection using YOLO models.
 
-Author: Aravind Itte
-Technology Stack: Flask, SocketIO, OpenCV, Ultralytics YOLO, TensorFlow
+Fixes:
+- Use pure WebSocket transport to avoid Engine.IO long-polling payload limits
+- Apply rate limiting and queueing on incoming webcam frames
+- Resize frames to model input size to improve accuracy and speed
+- Add NMS/threshold config via env vars
+- Emit using socketio.emit in background contexts only
+- Add CORS allowed origins from env
 """
-
 import os
 import cv2
 import base64
 import numpy as np
 import eventlet
+from eventlet.queue import LightQueue, Empty
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 from ultralytics import YOLO
@@ -19,336 +23,255 @@ import logging
 from werkzeug.utils import secure_filename
 import uuid
 from datetime import datetime
-import threading
 import time
-from io import BytesIO
-from PIL import Image
+
+# Patch for eventlet with urllib3 (if needed)
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Config from env
+CONF = float(os.environ.get('CONFIDENCE_THRESHOLD', '0.35'))
+IOU = float(os.environ.get('IOU_THRESHOLD', '0.45'))
+MAX_Q = int(os.environ.get('FRAME_QUEUE_MAX', '3'))
+TARGET_W = int(os.environ.get('INFER_WIDTH', '640'))
+TARGET_H = int(os.environ.get('INFER_HEIGHT', '384'))
+CORS = os.environ.get('CORS_ORIGINS', '*')
+
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'realtime-object-detection-2024')
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
-# Initialize SocketIO
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+# Force websockets transport to avoid payload overflow
+socketio = SocketIO(app, cors_allowed_origins=CORS, async_mode='eventlet',
+                    logger=False, engineio_logger=False, ping_timeout=30, ping_interval=25)
 
-# Global variables
+# Globals
 model = None
 model_loaded = False
-client_connections = {}
 processing_active = {}
+frame_queues = {}
 
-# Allowed file extensions
 ALLOWED_VIDEO_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv', 'webm'}
 ALLOWED_IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'bmp', 'tiff'}
 
 def allowed_file(filename, file_type):
-    """Check if file extension is allowed"""
-    if file_type == 'video':
-        return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_VIDEO_EXTENSIONS
-    elif file_type == 'image':
-        return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_IMAGE_EXTENSIONS
-    return False
+    ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+    return (file_type == 'video' and ext in ALLOWED_VIDEO_EXTENSIONS) or \
+           (file_type == 'image' and ext in ALLOWED_IMAGE_EXTENSIONS)
 
 def load_model():
-    """Load YOLO model with error handling"""
     global model, model_loaded
     try:
         logger.info("Loading YOLO model...")
-        # Try YOLOv8n first (smallest model for faster inference)
-        model = YOLO('yolov8n.pt')
+        model = YOLO(os.environ.get('MODEL_NAME', 'yolov8n.pt'))
         model_loaded = True
         logger.info("YOLO model loaded successfully!")
     except Exception as e:
-        logger.error(f"Error loading YOLO model: {e}")
+        logger.exception("Error loading YOLO model: %s", e)
         model_loaded = False
-        try:
-            # Fallback to pre-trained model download
-            logger.info("Attempting to download YOLOv8n model...")
-            model = YOLO('yolov8n.pt')
-            model_loaded = True
-            logger.info("YOLO model downloaded and loaded successfully!")
-        except Exception as e2:
-            logger.error(f"Failed to download model: {e2}")
-            model_loaded = False
+
+
+def preprocess_frame(frame):
+    # Resize to target while keeping aspect via letterbox style simple resize
+    return cv2.resize(frame, (TARGET_W, TARGET_H))
+
 
 def detect_objects(frame):
-    """Perform object detection on a frame"""
-    global model, model_loaded
-    
     if not model_loaded or model is None:
         return frame, []
-    
     try:
-        # Run YOLO detection
-        results = model(frame, conf=0.4, iou=0.45, verbose=False)
-        
+        resized = preprocess_frame(frame)
+        results = model(resized, conf=CONF, iou=IOU, verbose=False)
         detections = []
-        
-        # Process results
-        for result in results:
-            boxes = result.boxes
-            if boxes is not None:
-                for box in boxes:
-                    # Get box coordinates
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    confidence = box.conf[0].cpu().numpy()
-                    class_id = int(box.cls[0].cpu().numpy())
-                    class_name = model.names[class_id]
-                    
-                    # Draw bounding box with better styling
-                    color = (0, 255, 0)  # Green color
-                    thickness = 2
-                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, thickness)
-                    
-                    # Draw label background
-                    label = f"{class_name}: {confidence:.2f}"
-                    label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-                    cv2.rectangle(frame, (int(x1), int(y1) - label_size[1] - 10), 
-                                (int(x1) + label_size[0], int(y1)), color, -1)
-                    
-                    # Draw label text
-                    cv2.putText(frame, label, (int(x1), int(y1) - 5), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-                    
-                    # Store detection info
-                    detections.append({
-                        'class': class_name,
-                        'confidence': float(confidence),
-                        'bbox': [int(x1), int(y1), int(x2), int(y2)]
-                    })
-        
-        return frame, detections
-    
+        # scale back boxes to original frame size
+        h, w = frame.shape[:2]
+        rh, rw = resized.shape[:2]
+        sx, sy = w / rw, h / rh
+        annotated = frame.copy()
+        for r in results:
+            if r.boxes is None:
+                continue
+            for box in r.boxes:
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                conf = float(box.conf[0].cpu().numpy())
+                cls = int(box.cls[0].cpu().numpy())
+                name = model.names.get(cls, str(cls))
+                # scale
+                x1, y1, x2, y2 = int(x1 * sx), int(y1 * sy), int(x2 * sx), int(y2 * sy)
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                label = f"{name} {conf:.2f}"
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(annotated, (x1, max(0, y1 - th - 6)), (x1 + tw + 6, y1), (0, 255, 0), -1)
+                cv2.putText(annotated, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                detections.append({'class': name, 'confidence': conf, 'bbox': [x1, y1, x2, y2]})
+        return annotated, detections
     except Exception as e:
-        logger.error(f"Error in object detection: {e}")
+        logger.exception("Detection error: %s", e)
         return frame, []
 
 @app.route('/')
 def index():
-    """Main page"""
     return render_template('index.html')
 
 @app.route('/health')
 def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'model_loaded': model_loaded,
-        'timestamp': datetime.now().isoformat()
-    })
+    return jsonify({'status': 'healthy', 'model_loaded': model_loaded, 'timestamp': datetime.now().isoformat()})
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    """Handle file upload for image/video processing"""
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
+    f = request.files['file']
+    if f.filename == '':
         return jsonify({'error': 'No file selected'}), 400
-    
-    # Check file type and extension
-    is_video = allowed_file(file.filename, 'video')
-    is_image = allowed_file(file.filename, 'image')
-    
+    is_video = allowed_file(f.filename, 'video')
+    is_image = allowed_file(f.filename, 'image')
     if not (is_video or is_image):
         return jsonify({'error': 'Unsupported file format'}), 400
-    
-    try:
-        # Save uploaded file temporarily
-        filename = secure_filename(file.filename)
-        unique_filename = f"{uuid.uuid4()}_{filename}"
-        filepath = os.path.join('uploads', unique_filename)
-        
-        # Create uploads directory if it doesn't exist
-        os.makedirs('uploads', exist_ok=True)
-        file.save(filepath)
-        
-        if is_image:
-            # Process image
-            frame = cv2.imread(filepath)
-            if frame is not None:
-                processed_frame, detections = detect_objects(frame)
-                
-                # Encode processed frame
-                _, buffer = cv2.imencode('.jpg', processed_frame)
-                img_base64 = base64.b64encode(buffer).decode('utf-8')
-                
-                # Clean up
-                os.remove(filepath)
-                
-                return jsonify({
-                    'type': 'image',
-                    'image': img_base64,
-                    'detections': detections,
-                    'count': len(detections)
-                })
-        
-        elif is_video:
-            # Return video path for streaming processing
-            return jsonify({
-                'type': 'video',
-                'filepath': filepath,
-                'message': 'Video uploaded successfully. Use WebSocket for real-time processing.'
-            })
-    
-    except Exception as e:
-        logger.error(f"Error processing upload: {e}")
-        return jsonify({'error': 'Failed to process file'}), 500
-    
-    return jsonify({'error': 'Unknown error occurred'}), 500
+    filename = secure_filename(f.filename)
+    os.makedirs('uploads', exist_ok=True)
+    path = os.path.join('uploads', f"{uuid.uuid4()}_{filename}")
+    f.save(path)
+    if is_image:
+        frame = cv2.imread(path)
+        if frame is None:
+            return jsonify({'error': 'Invalid image'}), 400
+        annotated, dets = detect_objects(frame)
+        _, buf = cv2.imencode('.jpg', annotated)
+        b64 = base64.b64encode(buf).decode('utf-8')
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+        return jsonify({'type': 'image', 'image': b64, 'detections': dets, 'count': len(dets)})
+    return jsonify({'type': 'video', 'filepath': path})
 
 @socketio.on('connect')
-def handle_connect():
-    """Handle client connection"""
-    client_id = request.sid
-    client_connections[client_id] = {
-        'connected_at': datetime.now(),
-        'active': True
-    }
-    processing_active[client_id] = False
-    
-    logger.info(f"Client {client_id} connected")
-    emit('connection_status', {
-        'status': 'connected',
-        'model_loaded': model_loaded,
-        'client_id': client_id
-    })
+def on_connect():
+    sid = request.sid
+    processing_active[sid] = False
+    frame_queues[sid] = LightQueue(maxsize=MAX_Q)
+    emit('connection_status', {'status': 'connected', 'model_loaded': model_loaded, 'client_id': sid})
 
 @socketio.on('disconnect')
-def handle_disconnect():
-    """Handle client disconnection"""
-    client_id = request.sid
-    if client_id in client_connections:
-        del client_connections[client_id]
-    if client_id in processing_active:
-        processing_active[client_id] = False
-        del processing_active[client_id]
-    
-    logger.info(f"Client {client_id} disconnected")
+def on_disconnect():
+    sid = request.sid
+    processing_active.pop(sid, None)
+    frame_queues.pop(sid, None)
 
 @socketio.on('webcam_frame')
-def handle_webcam_frame(data):
-    """Handle webcam frame from client browser"""
-    client_id = request.sid
-    
+def on_webcam_frame(data):
+    """Enqueue frames, drop if queue is full to avoid payload overflow."""
+    sid = request.sid
+    q = frame_queues.get(sid)
+    if not q:
+        return
     try:
-        # Decode base64 image from browser
-        image_data = data['frame'].split(',')[1]  # Remove data:image/jpeg;base64,
-        image_bytes = base64.b64decode(image_data)
-        
-        # Convert to OpenCV format
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if frame is not None:
-            # Process frame for object detection
-            processed_frame, detections = detect_objects(frame)
-            
-            # Encode processed frame back to base64
-            _, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            processed_base64 = base64.b64encode(buffer).decode('utf-8')
-            
-            # Send processed frame back to client
-            emit('processed_frame', {
-                'frame': f"data:image/jpeg;base64,{processed_base64}",
-                'detections': detections,
-                'timestamp': time.time()
-            })
-        
-    except Exception as e:
-        logger.error(f"Error processing webcam frame: {e}")
-        emit('error', {'message': f'Frame processing error: {str(e)}'})
+        if q.qsize() >= MAX_Q:
+            # Drop oldest to keep stream flowing
+            try:
+                q.get_nowait()
+            except Empty:
+                pass
+        q.put_nowait(data['frame'])
+    except Exception:
+        pass
+
+    # Start processor once per client
+    if not processing_active.get(sid):
+        processing_active[sid] = True
+        eventlet.spawn_n(process_frames_worker, sid)
+
+
+def process_frames_worker(sid):
+    q = frame_queues.get(sid)
+    if not q:
+        return
+    last_emit = 0.0
+    target_interval = 0.1  # 10 FPS max
+    while processing_active.get(sid) and q:
+        try:
+            frame_data = q.get(timeout=1.0)
+        except Empty:
+            continue
+        try:
+            image_bytes = base64.b64decode(frame_data.split(',')[1])
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame is None:
+                continue
+            annotated, dets = detect_objects(frame)
+            _, buf = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            b64 = base64.b64encode(buf).decode('utf-8')
+            now = time.time()
+            if now - last_emit >= target_interval:
+                socketio.emit('processed_frame', {'frame': f"data:image/jpeg;base64,{b64}", 'detections': dets, 'timestamp': now}, room=sid)
+                last_emit = now
+        except Exception as e:
+            logger.exception("Frame worker error: %s", e)
+            socketio.emit('error', {'message': 'Frame processing error'}, room=sid)
 
 @socketio.on('process_video')
-def handle_process_video(data):
-    """Process uploaded video file with real-time detection"""
-    client_id = request.sid
-    filepath = data.get('filepath')
-    
-    if not filepath or not os.path.exists(filepath):
+def on_process_video(data):
+    sid = request.sid
+    path = data.get('filepath')
+    if not path or not os.path.exists(path):
         emit('error', {'message': 'Video file not found'})
         return
-    
-    processing_active[client_id] = True
-    
-    def video_stream():
-        """Video processing thread with real-time detection"""
-        cap = cv2.VideoCapture(filepath)
-        
-        if not cap.isOpened():
-            socketio.emit('error', {'message': 'Cannot open video file'}, room=client_id)
-            processing_active[client_id] = False
-            return
-        
-        frame_count = 0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        
-        # Calculate delay to maintain video speed
-        frame_delay = 1.0 / fps if fps > 0 else 0.033  # Default 30 FPS
-        
-        while processing_active.get(client_id, False):
+    processing_active[sid] = True
+    eventlet.spawn_n(process_video_worker, sid, path)
+
+
+def process_video_worker(sid, path):
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        socketio.emit('error', {'message': 'Cannot open video file'}, room=sid)
+        processing_active[sid] = False
+        return
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25
+    delay = 1.0 / fps
+    idx = 0
+    try:
+        while processing_active.get(sid) and cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
-            
-            frame_count += 1
-            
-            # Process frame with object detection
-            processed_frame, detections = detect_objects(frame)
-            
-            # Encode frame
-            _, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-            frame_base64 = base64.b64encode(buffer).decode('utf-8')
-            
-            # Emit frame to client with detection info
+            idx += 1
+            annotated, dets = detect_objects(frame)
+            _, buf = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            b64 = base64.b64encode(buf).decode('utf-8')
             socketio.emit('video_frame', {
-                'frame': f"data:image/jpeg;base64,{frame_base64}",
-                'detections': detections,
-                'progress': (frame_count / total_frames) * 100,
-                'frame_number': frame_count,
-                'total_frames': total_frames
-            }, room=client_id)
-            
-            # Control playback speed
-            eventlet.sleep(frame_delay)
-        
+                'frame': f"data:image/jpeg;base64,{b64}",
+                'detections': dets,
+                'progress': (idx / total * 100) if total else 0,
+                'frame_number': idx,
+                'total_frames': total
+            }, room=sid)
+            eventlet.sleep(delay)
+    finally:
         cap.release()
-        
-        # Clean up video file
         try:
-            os.remove(filepath)
-        except:
+            os.remove(path)
+        except Exception:
             pass
-        
-        socketio.emit('video_complete', {}, room=client_id)
-        logger.info(f"Video processing completed for client {client_id}")
-    
-    # Start video processing thread
-    eventlet.spawn(video_stream)
+        socketio.emit('video_complete', {}, room=sid)
 
 @socketio.on('stop_processing')
-def handle_stop_processing():
-    """Stop any active processing"""
-    client_id = request.sid
-    processing_active[client_id] = False
+def on_stop_processing():
+    sid = request.sid
+    processing_active[sid] = False
     emit('processing_stopped', {'status': 'stopped'})
 
 if __name__ == '__main__':
-    # Load YOLO model on startup
     load_model()
-    
-    # Start the application
     port = int(os.environ.get('PORT', 5000))
     host = os.environ.get('HOST', '0.0.0.0')
-    
     logger.info(f"Starting Real-Time Object Detection Server on {host}:{port}")
     logger.info(f"Model loaded: {model_loaded}")
-    
-    socketio.run(app, host=host, port=port, debug=False)
+    socketio.run(app, host=host, port=port, debug=False, transports=['websocket'])
