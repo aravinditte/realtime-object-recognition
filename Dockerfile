@@ -1,5 +1,6 @@
 # Real-Time Object Detection Dockerfile
 # Multi-stage build for optimized production image
+# Fixed for Debian Trixie (python:3.11-slim) OpenGL dependencies
 
 # Build stage
 FROM python:3.11-slim as builder
@@ -10,7 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies
+# Install system dependencies for building - Fixed for Debian Trixie
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
@@ -19,8 +20,11 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxrender-dev \
     libgomp1 \
-    libgl1-mesa-glx \
-    libgthread-2.0-0 \
+    libgl1 \
+    libglib2.0-dev \
+    libglx-mesa0 \
+    libegl1-mesa \
+    libglu1-mesa \
     && rm -rf /var/lib/apt/lists/*
 
 # Create virtual environment
@@ -42,15 +46,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
     PORT=5000
 
-# Install runtime dependencies
+# Install runtime dependencies - Fixed for Debian Trixie
 RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
-    libxrender-dev \
+    libxrender1 \
     libgomp1 \
-    libgl1-mesa-glx \
-    libgthread-2.0-0 \
+    libgl1 \
+    libglx-mesa0 \
+    libegl1-mesa \
+    libglu1-mesa \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
@@ -69,18 +75,19 @@ COPY --chown=appuser:appuser detect.py .
 COPY --chown=appuser:appuser templates/ templates/
 
 # Create directories for uploads and models
-RUN mkdir -p uploads models && \
-    chown -R appuser:appuser uploads models
+RUN mkdir -p uploads models logs && \
+    chown -R appuser:appuser uploads models logs
 
 # Switch to non-root user
 USER appuser
 
 # Download YOLO model (this will be cached in the image)
-RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+# Using a more lightweight approach for Railway deployment
+RUN python -c "from ultralytics import YOLO; model = YOLO('yolov8n.pt'); print('YOLOv8n model downloaded successfully')"
 
-# Health check
+# Health check - Updated for Railway compatibility
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:5000/health').raise_for_status()"
+    CMD python -c "import requests; requests.get('http://localhost:5000/health', timeout=5).raise_for_status()" || exit 1
 
 # Expose port
 EXPOSE 5000
