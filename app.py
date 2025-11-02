@@ -429,7 +429,7 @@ def serve_file(filename):
         safe_dir = os.path.abspath('uploads')
         full_path = os.path.abspath(os.path.join('uploads', secure_filename(filename)))
         
-        if not full_path.startswith(safe_dir) or not os.path exists(full_path):
+        if not full_path.startswith(safe_dir) or not os.path.exists(full_path):
             abort(404)
         
         # Get MIME type
