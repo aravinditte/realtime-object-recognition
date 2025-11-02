@@ -1,20 +1,21 @@
 # Real-Time Object Detection Dockerfile
 # Multi-stage build for optimized production image
-# Fixed for Debian Trixie (python:3.11-slim) with correct Mesa packages
+# Fixed for Debian Trixie (python:3.11-slim) with correct Mesa packages and build-time downloads
 
 # Build stage
 FROM python:3.11-slim AS builder
 
-# Set environment variables
+# Environment
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies for building - Fixed for Debian Trixie
+# System deps for building and Ultralytics downloader (curl)
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
+    curl \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -24,7 +25,7 @@ RUN apt-get update && apt-get install -y \
     libgthread-2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Create virtual environment
+# Python venv
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
@@ -36,15 +37,16 @@ RUN pip install --upgrade pip setuptools wheel && \
 # Production stage
 FROM python:3.11-slim AS production
 
-# Set environment variables
+# Environment
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     FLASK_ENV=production \
     HOST=0.0.0.0 \
     PORT=5000
 
-# Install runtime dependencies - Fixed for Debian Trixie
+# Runtime system deps + curl for model downloads
 RUN apt-get update && apt-get install -y \
+    curl \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -54,37 +56,41 @@ RUN apt-get update && apt-get install -y \
     libgthread-2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+# Non-root user with home dir
+RUN groupadd -r appuser && useradd -r -g appuser -m -d /home/appuser appuser
 
-# Set working directory
+# Workdir
 WORKDIR /app
 
-# Copy virtual environment from builder stage
+# Copy virtualenv from builder
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy application files
+# App files
 COPY --chown=appuser:appuser app.py .
 COPY --chown=appuser:appuser detect.py .
 COPY --chown=appuser:appuser templates/ templates/
 
-# Create directories for uploads and models
-RUN mkdir -p uploads models logs && \
-    chown -R appuser:appuser uploads models logs
+# Writable dirs and user config/cache to avoid warnings
+RUN mkdir -p /home/appuser/.config/matplotlib /home/appuser/.config/Ultralytics /home/appuser/.cache/torch uploads models logs \
+  && chown -R appuser:appuser /home/appuser/.config /home/appuser/.cache uploads models logs
 
-# Switch to non-root user
+ENV MPLCONFIGDIR=/home/appuser/.config/matplotlib \
+    YOLO_CONFIG_DIR=/home/appuser/.config/Ultralytics \
+    TORCH_HOME=/home/appuser/.cache/torch
+
+# Switch to non-root
 USER appuser
 
-# Pre-download YOLO model to warm cache
+# Optional: pre-download YOLO model to warm cache (can be removed if flaky)
 RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
 
-# Health check for Render deployment
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:5000/health', timeout=5).raise_for_status()" || exit 1
 
-# Expose port
+# Expose
 EXPOSE 5000
 
-# Run application
+# Start
 CMD ["python", "app.py"]
