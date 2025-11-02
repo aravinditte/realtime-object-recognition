@@ -1,0 +1,40 @@
+# Nixpacks configuration for Railway deployment
+# This is a fallback if Dockerfile is not used
+
+[phases.setup]
+nixPkgs = [
+  'python311',
+  'python311Packages.pip',
+  'gcc',
+  'glib',
+  'libGL',
+  'libGLU',
+  'mesa',
+  'pkg-config'
+]
+
+[phases.install]
+cmds = [
+  'pip install --upgrade pip',
+  'pip install -r requirements.txt'
+]
+
+[phases.build]
+cmds = [
+  'python -c "from ultralytics import YOLO; YOLO(\"yolov8n.pt\"); print(\"Model downloaded\")"'
+]
+
+[start]
+cmd = 'python app.py'
+
+[variables]
+FLASK_ENV = 'production'
+HOST = '0.0.0.0'
+PORT = '5000'
+MODEL_NAME = 'yolov8n.pt'
+CONFIDENCE_THRESHOLD = '0.30'
+IOU_THRESHOLD = '0.45'
+INFER_WIDTH = '640'
+INFER_HEIGHT = '384'
+FRAME_QUEUE_MAX = '3'
+MAX_CONTENT_LENGTH = '52428800'
