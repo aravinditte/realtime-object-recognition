@@ -6,12 +6,14 @@ Flask==3.0.0
 Flask-SocketIO==5.3.6
 
 # Computer Vision and AI
-ultralytics==8.0.220
-opencv-python==4.8.1.78
-numpy==1.24.3
+# Use versions that provide prebuilt wheels for Windows and modern Python
+ultralytics==8.3.34
+opencv-python==4.9.0.80
+numpy==1.26.4
 Pillow==10.1.0
-torch>=2.0.0
-torchvision>=0.15.0
+# Torch note: ultralytics will pull torch/torchvision; if install fails on Windows,
+# install CPU wheels manually per https://pytorch.org/get-started/locally/
+# Example (Windows CPU): pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # WebSocket and Async
 eventlet==0.33.3
@@ -20,6 +22,8 @@ python-socketio==5.9.0
 # Utilities
 Werkzeug==3.0.1
 requests==2.31.0
+setuptools>=68
+wheel>=0.41
 
 # Development and Testing (optional)
 pytest==7.4.3
@@ -27,4 +31,5 @@ black==23.10.1
 flake8==6.1.0
 
 # Production server (optional)
+# gunicorn is not for Windows; kept for cross-platform
 gunicorn==21.2.0
